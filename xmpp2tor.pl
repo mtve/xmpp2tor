@@ -152,8 +152,8 @@ sub first_line {
 	
 	::D "$h->{_xmpp2tor_id} got $::esc{$line}";
 
-	if ($line =~ /^XMPP2TOR CALLME ([!-~]+) ([!-~]+) ([!-~]+)$/i) {
-		my ($addr, $key1, $key2) = ($1, $2, $3);
+	if ($line =~ /^XMPP2TOR CALLME ([a-z0-9]+\.onion) ([0-9a-f]+) ([0-9a-f]+)$/i) {
+		my ($addr, $key1, $key2) = (lc $1, $2, $3);
 		if ($addr eq $CFG{TOR_SERVICE_NAME} &&
 			$remote{$addr}{key1} eq $key1 &&
 			$remote{$addr}{key2} eq $key2) {
@@ -164,7 +164,7 @@ sub first_line {
 		callback ($addr, $key1, $key2);
 		handler::destroy ($h);
 	} elsif ($line =~ /^XMPP2TOR CALLBACK ([!-~]+) ([!-~]+)$/i) {
-		check_callback ($h, $1, $2);
+		check_callback ($h, lc $1, $2);
 	} else {
 		::E "$h->{_xmpp2tor_id} bad $::esc{$line}";
 		handler::destroy ($h);
@@ -557,8 +557,7 @@ sub roster {
 	my $file = $CFG{XMPP_ROSTER_FILE};
 
 	# read file
-	open my $f, $file or die "open $file: $!";
-	{
+	if (open my $f, $file) {
 		local $_;
 		while (<$f>) {
 			s/\s*\z//;
@@ -566,6 +565,8 @@ sub roster {
 			::D "file $jid, $name, $group";
 			$roster{$jid} = [ $name, $group ];
 		}
+	} else {
+		::I "no roster file, will create";
 	}
 
 	# update from request
@@ -590,7 +591,7 @@ sub roster {
 	# write file and prepare output
 	my $item = '';
 	my $presence = '';
-	open $f, '>', "$file.tmp" or die "open $file: $!";
+	open my $f, '>', "$file.tmp" or die "open $file: $!";
 	for my $jid (sort keys %roster) {
 		my ($name, $group) = @{ $roster{$jid} };
 
