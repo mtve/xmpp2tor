@@ -4,18 +4,17 @@
 
 P2P instant messaging over TOR, available from any jabber client
 
-xmpp server is based on in.jabberd from inetdxtra by R. Rawson-Tetley
-
-requirements:
+modules required:
 - AnyEvent
 
 tested with Miranda-IM
 
+xmpp server is based on in.jabberd from inetdxtra by R. Rawson-Tetley
+
 how-to use:
 - create tor hidden service, it will be your address
-- edit tor_socks_port and tor_service_name in xmpp2tor.conf
+- edit xmpp2tor.conf parameters tor_socks_port, tor_service_name
 - run this script
-- see line "
 - connect with your jabber client, usually to 127.0.0.1 user/pass
 - add test contact xxxx.onion and report version of your jabber client
 
@@ -42,7 +41,7 @@ use AnyEvent::Log;
 
 my $CONFIG_FILE = $ARGV[0] || 'xmpp2tor.conf';
 
-my %CFG = (
+my %C = (
 	LOG_LEVEL		=> 'debug',
 
 	TOR_SERVICE_NAME	=> 'changeme.onion',
@@ -102,26 +101,13 @@ sub gc {
 		local *__ANON__ = 'gc.destroyed';
 		::D "$id ok";
 	};
-}
-
-sub destroy {
-	my ($h) = @_;
-
-	gc ($h);
-	$h->destroy;
-}
-
-sub push_shutdown {
-	my ($h) = @_;
-
-	gc ($h);
-	$h->push_shutdown;
+	return $h;
 }
 
 package tor_service;
 
 sub init {
-	my ($host, $port) = ($CFG{TOR_SERVICE_ADDR}, $CFG{TOR_SERVICE_PORT});
+	my ($host, $port) = ($C{TOR_SERVICE_ADDR}, $C{TOR_SERVICE_PORT});
 	AnyEvent::Socket::tcp_server $host, $port, \&handle;
 	::I "started on $host:$port";
 }
@@ -138,11 +124,11 @@ sub handle {
 
 			$fatal ||= 0;
 			::D "$h->{_xmpp2tor_id} fatal=$fatal $message";
-			handler::destroy ($h);
+			handler::gc ($h)->destroy;
 		},
 		timeout		=> 20,
 		_xmpp2tor_nogc	=> \$h,
-		_xmpp2tor_id	=> "tor from $host:$port",
+		_xmpp2tor_id	=> "tor-from-$host:$port",
 	);
 	$h->push_read (line => \&first_line);
 }
@@ -152,22 +138,29 @@ sub first_line {
 	
 	::D "$h->{_xmpp2tor_id} got $::esc{$line}";
 
-	if ($line =~ /^XMPP2TOR CALLME ([a-z0-9]+\.onion) ([0-9a-f]+) ([0-9a-f]+)$/i) {
+	if ($line =~ /^XMPP2TOR CALLME ([a-z0-9]+\.onion) (\w+) (\w+)$/i) {
 		my ($addr, $key1, $key2) = (lc $1, $2, $3);
-		if ($addr eq $CFG{TOR_SERVICE_NAME} &&
-			$remote{$addr}{key1} eq $key1 &&
-			$remote{$addr}{key2} eq $key2) {
-			$INIT->send;
-			handler::push_shutdown ($h);
-			return;
+		if ($addr eq $C{TOR_SERVICE_NAME}) {
+			if ($remote{$addr}{key1} eq $key1 &&
+			    $remote{$addr}{key2} eq $key2) {
+				delete $remote{$addr};
+				$INIT->send;
+			} else {
+				::E "somebody pretending myself";
+			}
+		} else {
+			if ($INIT->ready) {
+				callback ($addr, $key1, $key2);
+			} else {
+				::E "somebody called but not ready yet";
+			}
 		}
-		callback ($addr, $key1, $key2);
-		handler::destroy ($h);
-	} elsif ($line =~ /^XMPP2TOR CALLBACK ([!-~]+) ([!-~]+)$/i) {
+		handler::gc ($h)->destroy;
+	} elsif ($line =~ /^XMPP2TOR CALLBACK (\w+) (\w+)$/i) {
 		check_callback ($h, lc $1, $2);
 	} else {
 		::E "$h->{_xmpp2tor_id} bad $::esc{$line}";
-		handler::destroy ($h);
+		handler::gc ($h)->destroy;
 	}
 }
 
@@ -176,12 +169,12 @@ sub check_callback {
 
 	if (!exists $remote{$addr}) {
 		::E "$h->{_xmpp2tor_id} $addr not asked";
-		handler::destroy ($h);
+		handler::gc ($h)->destroy;
 		return;
 	}
 	if ($remote{$addr}{key1} ne $key1) {
 		::E "$h->{_xmpp2tor_id} $addr bad key $key1 != $remote{$addr}{key1}";
-		handler::destroy ($h);
+		handler::gc ($h)->destroy;
 		return;
 	}
 
@@ -195,7 +188,7 @@ sub check_callback {
 			peer_connected ($h, $addr);
 		} else {
 			::E "$h->{_xmpp2tor_id} $addr bad $::esc{$line}";
-			handler::destroy ($h);
+			handler::gc ($h)->destroy;
 		}
 	});
 }
@@ -204,8 +197,11 @@ sub peer_connected {
 	my ($h, $addr) = @_;
 
 	::I "peer $addr confirmed";
-	# trusted now;
 	$h->timeout (0); 
+	$remote{$addr}{h} = $h;
+	$h->{_xmpp2tor_disconnect} = on_destroy::call {
+		delete $remote{$addr}{h};
+	};
 	read_message ($h);
 }
 
@@ -238,7 +234,7 @@ sub callback {
 		my ($h) = @_;
 		local *__ANON__ = 'callback.connected';
 	
-		my $req = "XMPP2TOR CALLBACK $CFG{TOR_SERVICE_NAME} $key1$CRLF";
+		my $req = "XMPP2TOR CALLBACK $C{TOR_SERVICE_NAME} $key1$CRLF";
 		::D "$addr send $req";
 		$h->push_write ($req);
 		$h->push_read (line => sub {
@@ -252,7 +248,7 @@ sub callback {
 				$h->push_write ($req);
 				peer_connected ($h, $addr);
 			} else {
-				handler::destroy ($h);
+				handler::gc ($h)->destroy;
 			}
 		});
 	}, sub {
@@ -280,16 +276,20 @@ sub callme {
 		my ($h) = @_;
 		local *__ANON__ = 'callme.connected';
 
-		my $req = "XMPP2TOR CALLME $CFG{TOR_SERVICE_NAME} " .
+		my $req = "XMPP2TOR CALLME $C{TOR_SERVICE_NAME} " .
 			"$remote{$addr}{key1} $remote{$addr}{key2}$CRLF";
 		::D "$addr send $req";
 		$h->push_write ($req);
 		::I "$addr requested callme";
-		handler::push_shutdown ($h);
+		handler::gc ($h)->push_shutdown;
 		$remote{$addr}{state} = 'called';
 	}, sub {
 		local *__ANON__ = 'callme.not_connected';
 		::D "$addr";
+		if ($addr eq $C{TOR_SERVICE_NAME}) {
+			::E "could not call myself, something is wrong with tor";
+			exit;
+		}
 	});
 }
 
@@ -298,7 +298,7 @@ sub socks {
 
 	::D "connecting to $addr";
 	my $h; $h = new AnyEvent::Handle (
-		connect 	=> [ $CFG{TOR_SOCKS_ADDR}, $CFG{TOR_SOCKS_PORT} ],
+		connect 	=> [ $C{TOR_SOCKS_ADDR}, $C{TOR_SOCKS_PORT} ],
 		timeout		=> 60,
 		on_error	=> sub {
 			my ($h, $fatal, $message) = @_;
@@ -307,7 +307,7 @@ sub socks {
 			$fatal ||= 0;
 			::D "fatal=$fatal $message";
 			::E "connect to tor socks failed";
-			handler::destroy ($h);
+			handler::gc ($h)->destroy;
 		},
 		on_connect	=> sub {
 			my ($h) = @_;
@@ -322,7 +322,7 @@ sub socks {
 		_xmpp2tor_addr	=> $addr,
 		_xmpp2tor_cb	=> $cb,
 		_xmpp2tor_guard	=> on_destroy::call { $cb_err && $cb_err->() },
-		_xmpp2tor_id	=> "tor to $addr",
+		_xmpp2tor_id	=> "tor-to-$addr",
 	);
 }
 
@@ -335,13 +335,13 @@ sub socks_reply1 {
 	if ($data eq pack 'CC', 5, 0) {
 		# v5, connect, reserved, name, addr, port
 		my $req = pack 'CCCC C/A n', 5, 1, 0, 3,
-			$h->{_xmpp2tor_addr}, $CFG{TOR_SERVICE_VIRTPORT};
+			$h->{_xmpp2tor_addr}, $C{TOR_SERVICE_VIRTPORT};
 		::D "$h->{_xmpp2tor_id} send $::h{$req}";
 		$h->push_write ($req);
 		$h->push_read (chunk => 10, \&socks_reply2);
 	} else {
 		::E "$h->{_xmpp2tor_id} bad reply $::h{$data}";
-		handler::destroy ($h);
+		handler::gc ($h)->destroy;
 	}
 }
 
@@ -356,8 +356,8 @@ sub socks_reply2 {
 		$h->{_xmpp2tor_guard}->cancel ();
 		$h->{_xmpp2tor_cb}->($h);
 	} else {
-		::I "$h->{_xmpp2tor_id} connect failed $::h{$data}";
-		handler::destroy ($h);
+		::E "$h->{_xmpp2tor_id} connect failed $::h{$data}";
+		handler::gc ($h)->destroy;
 	}
 }
 
@@ -366,7 +366,7 @@ package xmpp;
 use Digest::SHA 'sha1_hex';
 
 sub init {
-	my ($host, $port) = ($CFG{XMPP_ADDR}, $CFG{XMPP_PORT});
+	my ($host, $port) = ($C{XMPP_ADDR}, $C{XMPP_PORT});
 	AnyEvent::Socket::tcp_server $host, $port, \&handle;
 	::I "started on $host:$port";
 }
@@ -383,11 +383,11 @@ sub handle {
 
 			$fatal ||= 0;
 			::D "$h->{_xmpp2tor_id} fatal=$fatal $message buf=${\$h->rbuf }";
-			handler::destroy ($h);
+			handler::gc ($h)->destroy;
 		},
 		timeout		=> 20,
 		_xmpp2tor_nogc	=> \$h,
-		_xmpp2tor_id	=> "xmpp from $host:$port",
+		_xmpp2tor_id	=> "xmpp-from-$host:$port",
 	);
 	$h->push_read (regex => qr!^ \s*
 		<\? xml [^>]* > \s*
@@ -402,7 +402,7 @@ sub start_stream {
 
 	$h->{xmpp_servername} =
 	 	$data =~ /<stream:stream[^>]*\bto=["'](.*?)["']/ ?
-			$1 : $CFG{XMPP_ADDR};
+			$1 : $C{XMPP_ADDR};
 	$h->{xmpp_streamid} = int rand 1e9;
 
 	$h->push_write (<<XML);
@@ -437,7 +437,7 @@ sub read_cb {
 	};
 	if ($@) {
 		::E "$h->{_xmpp2tor_id} $::esc{$@} closing";
-		handler::destroy ($h);
+		handler::gc ($h)->destroy;
 	}
 }
 
@@ -448,8 +448,8 @@ sub process {
 	::D "$cur_h->{_xmpp2tor_id} got $::esc{$_}";
 	if (m!^</!) {
 		# end of stream
-		::I "$cur_h->{_xmpp2tor_id} eos";
-		handler::destroy ($cur_h);
+		::I "$cur_h->{_xmpp2tor_id} closed";
+		handler::gc ($cur_h)->destroy;
 		return;
 	}
 
@@ -538,10 +538,10 @@ sub iq_auth {
 </query>
 XML
 
-	die "bad username" if $a{username} ne $CFG{XMPP_USER};
-	die "bad password" if $a{password} && $a{password} ne $CFG{XMPP_PASS};
+	die "bad username" if $a{username} ne $C{XMPP_USER};
+	die "bad password" if $a{password} && $a{password} ne $C{XMPP_PASS};
 	die "bad digest" if $a{digest} && lc $a{digest} ne
-		lc sha1_hex ($cur_h->{xmpp_streamid} . $CFG{XMPP_PASS});
+		lc sha1_hex ($cur_h->{xmpp_streamid} . $C{XMPP_PASS});
 
 	::I "$cur_h->{_xmpp2tor_id} logged in $a{username}";
 	$cur_h->{xmpp_userandresource} =
@@ -554,7 +554,7 @@ sub roster {
 	my ($result) = @_;
 
 	my %roster;
-	my $file = $CFG{XMPP_ROSTER_FILE};
+	my $file = $C{XMPP_ROSTER_FILE};
 
 	# read file
 	if (open my $f, $file) {
@@ -565,8 +565,9 @@ sub roster {
 			::D "file $jid, $name, $group";
 			$roster{$jid} = [ $name, $group ];
 		}
+		close $f;
 	} else {
-		::I "no roster file, will create";
+		::I "no roster file $file, will create";
 	}
 
 	# update from request
@@ -648,28 +649,30 @@ if (open my $f, $CONFIG_FILE) {
 	while (<$f>) {
 		next if /^[;#\*]|^\s*$/;
 		/^\s*(\S*)\s*=\s*(.*?)\s*$/ or die "bad config line $_";
-		$CFG{uc $1} = $2;
+		$C{uc $1} = $2;
 	}
 } else {
 	::E "open $CONFIG_FILE: $!";
 }
 
-$AnyEvent::Log::FILTER->level ($CFG{LOG_LEVEL});
-$AnyEvent::Log::LOG->log_to_file ($CFG{LOG_FILE}) if $CFG{LOG_FILE};
+$AnyEvent::Log::FILTER->level ($C{LOG_LEVEL});
+$AnyEvent::Log::LOG->log_to_file ($C{LOG_FILE}) if $C{LOG_FILE};
 
-::I "starting";
+::I "starting on perl $^V system $^O";
 
-if ($CFG{PID_FILE}) {
-	open my $f, '>', $CFG{PID_FILE} or die "open $CFG{PID_FILE}: $!";
+if ($C{PID_FILE}) {
+	open my $f, '>', $C{PID_FILE} or die "open $C{PID_FILE}: $!";
 	print $f "$$\n";
 }
-my $pid_guard = on_destroy::call { unlink $CFG{PID_FILE} or die $! };
+my $pid_guard = on_destroy::call { unlink $C{PID_FILE} or die $! };
 
 $INIT = AnyEvent->condvar;
 tor_service::init ();
-tor_connect::callme ($CFG{TOR_SERVICE_NAME});
+tor_connect::callme ($C{TOR_SERVICE_NAME});
 $INIT->recv;
 ::I "tor check successful";
+
 xmpp::init ();
 ::I "started";
+
 AnyEvent->condvar->recv; # forever
