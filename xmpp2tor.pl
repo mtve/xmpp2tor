@@ -167,14 +167,14 @@ package tor_connect;
 sub callme {
 	my ($addr) = @_;
 
-	connect ($addr, sub {
+	socks ($addr, sub {
 		my ($h, $ok) = @_;
 		local *__ANON__ = 'callme.connected';
 
 		my $req = "XMPP2TOR CALLME $CFG{TOR_SERVICE_NAME} key1 key2$CRLF";
 		::D "send $req";
 		$h->push_write ($req);
-		$h->on_drain(sub {
+		$h->on_drain (sub {
 			my ($h) = @_;
 			local *__ANON__ = 'callme.on_drain';
 
@@ -184,7 +184,7 @@ sub callme {
 	});
 }
 
-sub connect {
+sub socks {
 	my ($addr, $cb) = @_;
 
 	::D "connecting to $addr";
@@ -193,7 +193,7 @@ sub connect {
 		timeout		=> 60,
 		on_error	=> sub {
 			my ($h, $fatal, $message) = @_;
-			local *__ANON__ = 'callme.on_error';
+			local *__ANON__ = 'socks.on_error';
 
 			$fatal ||= 0;
 			::D "fatal=$fatal $message";
@@ -202,7 +202,7 @@ sub connect {
 		},
 		on_connect	=> sub {
 			my ($h) = @_;
-			local *__ANON__ = 'callme.on_connect';
+			local *__ANON__ = 'socks.on_connect';
 
 			::D "connected to socks";
 			# v5, no auth
