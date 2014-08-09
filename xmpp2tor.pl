@@ -12,13 +12,16 @@ tested with Miranda-IM
 xmpp server is based on in.jabberd from inetdxtra by R. Rawson-Tetley
 
 how-to use:
-- create tor hidden service, it will be your address
+- plan your tcp ports or use default 5222 for xmpp, 5221 for tor service
+- create tor hidden service with torrc additional configuration like this:
+     HiddenServiceDir </path/>
+     HiddenServicePort 8221 <tor_service_addr>:<tor_service_port>
 - edit xmpp2tor.conf parameters tor_socks_port, tor_service_name
-- run this script
+- run this program
 - connect with your jabber client, usually to 127.0.0.1 user/pass
 - add test contact xxxx.onion and report version of your jabber client
 
-TOR side sequence diagram:
+TOR service sequence diagram:
  A->B: connect to b_addr.onion:5221
  A->B: "XMPP2TOR CALLME a_addr.onion key1 key2" CR LF
  B->A: disconnect
@@ -150,21 +153,21 @@ sub first_line {
 			}
 		} else {
 			if ($INIT->ready) {
-				callback ($addr, $key1, $key2);
+				callback_out ($addr, $key1, $key2);
 			} else {
 				::E "somebody called but not ready yet";
 			}
 		}
 		handler::gc ($h)->destroy;
 	} elsif ($line =~ /^XMPP2TOR CALLBACK (\w+) (\w+)$/i) {
-		check_callback ($h, lc $1, $2);
+		callback_in ($h, lc $1, $2);
 	} else {
 		::E "$h->{_xmpp2tor_id} bad $::esc{$line}";
 		handler::gc ($h)->destroy;
 	}
 }
 
-sub check_callback {
+sub callback_in {
 	my ($h, $addr, $key1) = @_;
 
 	if (!exists $remote{$addr}) {
@@ -181,7 +184,7 @@ sub check_callback {
 	$h->push_write ("OK $remote{$addr}{key2}$CRLF");
 	$h->push_read (line => sub {
 		my ($h, $line) = @_;
-		local *__ANON__ = 'check_callback.reply';
+		local *__ANON__ = 'callback_in.reply';
 
 		::D "$h->{_xmpp2tor_id} $addr got $::esc{$line}";
 		if ($line =~ /^OK$/) {
@@ -223,7 +226,7 @@ sub process_message {
 	# XXX
 }
 
-sub callback {
+sub callback_out {
 	my ($addr, $key1, $key2) = @_;
 
 	::D "calling back $addr with $key1, $key2";
