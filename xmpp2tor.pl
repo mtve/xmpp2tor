@@ -12,13 +12,13 @@ tested with Miranda-IM
 xmpp server is based on in.jabberd from inetdxtra by R. Rawson-Tetley
 
 how-to use:
-- plan your tcp ports or use default 5222 for xmpp, 5221 for tor service
+- plan your tcp ports, or use default 5222 for xmpp and 5221 for tor service
 - create tor hidden service with torrc additional configuration like this:
      HiddenServiceDir </path/>
      HiddenServicePort 8221 <tor_service_addr>:<tor_service_port>
 - edit xmpp2tor.conf parameters tor_socks_port, tor_service_name
 - run this program
-- connect with your jabber client, usually to 127.0.0.1 user/pass
+- connect with your jabber client, usually to 127.0.0.1 with user/pass
 - add test contact xxxx.onion and report version of your jabber client
 
 TOR service sequence diagram:
@@ -155,11 +155,11 @@ sub first_line {
 			if ($INIT->ready) {
 				callback_out ($addr, $key1, $key2);
 			} else {
-				::E "somebody called but not ready yet";
+				::E "somebody called but we are not ready yet";
 			}
 		}
 		handler::gc ($h)->destroy;
-	} elsif ($line =~ /^XMPP2TOR CALLBACK (\w+) (\w+)$/i) {
+	} elsif ($line =~ /^XMPP2TOR CALLBACK ([a-z0-9]+\.onion) (\w+)$/i) {
 		callback_in ($h, lc $1, $2);
 	} else {
 		::E "$h->{_xmpp2tor_id} bad $::esc{$line}";
@@ -199,7 +199,7 @@ sub callback_in {
 sub peer_connected {
 	my ($h, $addr) = @_;
 
-	::I "peer $addr confirmed";
+	::I "$addr confirmed";
 	$h->timeout (0); 
 	$remote{$addr}{h} = $h;
 	$h->{_xmpp2tor_disconnect} = on_destroy::call {
@@ -675,7 +675,10 @@ tor_connect::callme ($C{TOR_SERVICE_NAME});
 $INIT->recv;
 ::I "tor check successful";
 
-xmpp::init ();
+tor_connect::callme ('eqfuo6kefcnktd5j.onion')
+	if $C{TOR_SERVICE_NAME} eq '6f2nx7d3zemf4hhf.onion';
+
+#xmpp::init ();
 ::I "started";
 
 AnyEvent->condvar->recv; # forever
