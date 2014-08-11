@@ -41,6 +41,7 @@ use AnyEvent;
 use AnyEvent::Handle;
 use AnyEvent::Socket;
 use AnyEvent::Log;
+use Digest::SHA;
 
 my $CONFIG_FILE = $ARGV[0] || 'xmpp2tor.conf';
 
@@ -70,6 +71,7 @@ sub I($) { LOG (info  => @_) }
 sub E($) { LOG (error => @_) }
 
 my $CRLF = "\015\012";
+my $ONION_QR = qr/[a-z0-9]+\.onion/;
 
 my $INIT;
 my %local;
@@ -81,11 +83,11 @@ sub TIEHASH { bless {} }
 sub FETCH { my $s = $_[1]; $s =~ s/[^ -~]/./g; $s }
 tie %::esc, 'esc';
 
-package h;
+package hex;
 
 sub TIEHASH { bless {} }
 sub FETCH { unpack 'H*', $_[1] }
-tie %::h, 'h';
+tie %::hex, 'hex';
 
 package on_destroy;
 
@@ -141,7 +143,7 @@ sub first_line {
 	
 	::D "$h->{_xmpp2tor_id} got $::esc{$line}";
 
-	if ($line =~ /^XMPP2TOR CALLME ([a-z0-9]+\.onion) (\w+) (\w+)$/i) {
+	if ($line =~ /^XMPP2TOR CALLME ($ONION_QR) (\w+) (\w+)$/i) {
 		my ($addr, $key1, $key2) = (lc $1, $2, $3);
 		if ($addr eq $C{TOR_SERVICE_NAME}) {
 			if ($remote{$addr}{key1} eq $key1 &&
@@ -159,7 +161,7 @@ sub first_line {
 			}
 		}
 		handler::gc ($h)->destroy;
-	} elsif ($line =~ /^XMPP2TOR CALLBACK ([a-z0-9]+\.onion) (\w+)$/i) {
+	} elsif ($line =~ /^XMPP2TOR CALLBACK ($ONION_QR) (\w+)$/i) {
 		callback_in ($h, lc $1, $2);
 	} else {
 		::E "$h->{_xmpp2tor_id} bad $::esc{$line}";
@@ -201,8 +203,14 @@ sub peer_connected {
 
 	::I "$addr confirmed";
 	$h->timeout (0); 
+	handler::gc ($h);
 	$remote{$addr}{h} = $h;
+	$remote{$addr}{presence} = 'xa';
+	$remote{$addr}{group} ||= $C{XMPP_NEWCONTACTS_GROUP};
+	my $id = $h->{_xmpp2tor_id};
 	$h->{_xmpp2tor_disconnect} = on_destroy::call {
+		local *__ANON__ = 'peer.destroyed';
+		::D "$id $addr ok";
 		delete $remote{$addr}{h};
 	};
 	read_message ($h);
@@ -231,7 +239,7 @@ sub callback_out {
 
 	::D "calling back $addr with $key1, $key2";
 
-	# XXX blacklist
+	return if xmpp::is_blacklisted ($addr);
 
 	tor_connect::socks ($addr, sub {
 		my ($h) = @_;
@@ -267,13 +275,10 @@ sub rand_hex { sprintf '%02x'x8, map rand 256, 1..8 }
 sub callme {
 	my ($addr) = @_;
 
-	die "wtf" if exists $remote{$addr};
+	return if xmpp::is_blacklisted ($addr);
 
-	$remote{$addr} = {
-		key1	=> rand_hex (),
-		key2	=> rand_hex (),
-		state	=> 'trying',
-	};
+	$remote{$addr}{key1} = rand_hex ();
+	$remote{$addr}{key2} = rand_hex ();
 
 	socks ($addr, sub {
 		my ($h) = @_;
@@ -285,7 +290,6 @@ sub callme {
 		$h->push_write ($req);
 		::I "$addr requested callme";
 		handler::gc ($h)->push_shutdown;
-		$remote{$addr}{state} = 'called';
 	}, sub {
 		local *__ANON__ = 'callme.not_connected';
 		::D "$addr";
@@ -332,18 +336,18 @@ sub socks {
 sub socks_reply1 {
 	my ($h, $data) = @_;
 
-	::D "$h->{_xmpp2tor_id} got $::h{$data}";
+	::D "$h->{_xmpp2tor_id} got $::hex{$data}";
 
 	# v5, accepted no auth
 	if ($data eq pack 'CC', 5, 0) {
 		# v5, connect, reserved, name, addr, port
 		my $req = pack 'CCCC C/A n', 5, 1, 0, 3,
 			$h->{_xmpp2tor_addr}, $C{TOR_SERVICE_VIRTPORT};
-		::D "$h->{_xmpp2tor_id} send $::h{$req}";
+		::D "$h->{_xmpp2tor_id} send $::hex{$req}";
 		$h->push_write ($req);
 		$h->push_read (chunk => 10, \&socks_reply2);
 	} else {
-		::E "$h->{_xmpp2tor_id} bad reply $::h{$data}";
+		::E "$h->{_xmpp2tor_id} bad reply $::hex{$data}";
 		handler::gc ($h)->destroy;
 	}
 }
@@ -351,7 +355,7 @@ sub socks_reply1 {
 sub socks_reply2 {
 	my ($h, $data) = @_;
 
-	::D "$h->{_xmpp2tor_id} got $::h{$data}";
+	::D "$h->{_xmpp2tor_id} got $::hex{$data}";
 
 	# v5, success, reserved, ipv4, addr, port
 	if ($data eq pack 'C10', 5, 0, 0, 1, 0,0,0,0, 0,0) {
@@ -359,14 +363,20 @@ sub socks_reply2 {
 		$h->{_xmpp2tor_guard}->cancel ();
 		$h->{_xmpp2tor_cb}->($h);
 	} else {
-		::E "$h->{_xmpp2tor_id} connect failed $::h{$data}";
+		::E "$h->{_xmpp2tor_id} connect failed $::hex{$data}";
 		handler::gc ($h)->destroy;
 	}
 }
 
 package xmpp;
 
-use Digest::SHA 'sha1_hex';
+sub is_blacklisted {
+	my ($addr) = @_;
+
+	my $res = ($remote{$addr}{group} || '') eq $C{XMPP_BLACKLIST_GROUP};
+	::D $addr if $res;
+	return $res;
+}
 
 sub init {
 	my ($host, $port) = ($C{XMPP_ADDR}, $C{XMPP_PORT});
@@ -543,8 +553,8 @@ XML
 
 	die "bad username" if $a{username} ne $C{XMPP_USER};
 	die "bad password" if $a{password} && $a{password} ne $C{XMPP_PASS};
-	die "bad digest" if $a{digest} && lc $a{digest} ne
-		lc sha1_hex ($cur_h->{xmpp_streamid} . $C{XMPP_PASS});
+	die "bad digest" if $a{digest} && lc $a{digest} ne lc
+		Digest::SHA::sha1_hex ($cur_h->{xmpp_streamid} . $C{XMPP_PASS});
 
 	::I "$cur_h->{_xmpp2tor_id} logged in $a{username}";
 	$cur_h->{xmpp_userandresource} =
@@ -556,30 +566,14 @@ XML
 sub roster {
 	my ($result) = @_;
 
-	my %roster;
-	my $file = $C{XMPP_ROSTER_FILE};
-
-	# read file
-	if (open my $f, $file) {
-		local $_;
-		while (<$f>) {
-			s/\s*\z//;
-			my ($jid, $name, $group) = split /,/ or next;
-			::D "file $jid, $name, $group";
-			$roster{$jid} = [ $name, $group ];
-		}
-		close $f;
-	} else {
-		::I "no roster file $file, will create";
-	}
-
 	# update from request
 	while (m!
 <item \b .*? \b jid=["'](.*?)[@"'] .*? \b subscription=["']remove["']
 	!gx) {
 		::D "remove $1";
-		delete $roster{$1};
+		delete $remote{$1};
 	}
+
 	while (m!
 <item \b .*? \b jid=["'](.*?)[@"'] .*? \b name=["'](.*?)["'] .*? (?: /> | >
  \C*?
@@ -587,33 +581,39 @@ sub roster {
  \C*?
 </item> )?
 	!gx) {
-		my ($jid, $name, $group) = ($1, $2, $3 || '');
-		::D "add $jid, $name, $group";
-		$roster{$jid} = [ $name, $group ];
+		my ($addr, $name, $group) = ($1, $2, $3 || '');
+
+		$addr =~ s/\@.*//;
+		$addr .= ".onion" if $addr !~/\./;
+		if ($addr =~ $ONION_QR) {
+			::D "add $addr, $name, $group";
+			$remote{$addr}{name} = $name;
+			$remote{$addr}{group} = $group;
+
+			tor_connect::callme ($addr);
+		} else {
+			::E "will not add $::esc{$addr}";
+		}
 	}
 
-	# write file and prepare output
+	roster_write ();
+
+	# prepare output
 	my $item = '';
 	my $presence = '';
-	open my $f, '>', "$file.tmp" or die "open $file: $!";
-	for my $jid (sort keys %roster) {
-		my ($name, $group) = @{ $roster{$jid} };
-
-		print $f "$jid,$name,$group\n" or die "print: $!";
-
-		$jid = "$jid\@$cur_h->{xmpp_servername}";
+	for (sort keys %remote) {
+		my $jid = "$_\@$cur_h->{xmpp_servername}";
 
 		$item .= <<XML;
-  <item jid='$jid' name='$name' subscription='both'>
-   <group>$group</group>
+  <item jid='$jid' name='$remote{$_}{name}' subscription='both'>
+   <group>$remote{$_}{group}</group>
   </item>
 XML
 		$presence .= <<XML;
-<presence type='unavailable' from='$jid' to='$cur_h->{xmpp_userandresource}' />
+<presence type='@{[ $remote{$_}{presence} ||= 'unavailable' ]}' from='$jid'
+ to='$cur_h->{xmpp_userandresource}' />
 XML
 	}
-	close $f or die "close: $!";
-	rename "$file.tmp", $file or die "rename $file.tmp to $file: $!";
 
 	return <<XML;
 <iq $result from='$cur_h->{xmpp_userandresource}'>
@@ -625,6 +625,35 @@ $presence
 XML
 }
 
+sub roster_read {
+	my $file = $C{XMPP_ROSTER_FILE};
+
+	# read file
+	if (open my $f, $file) {
+		local $_;
+		while (<$f>) {
+			s/\s*\z//;
+			my ($jid, $name, $group) = split /,/ or next;
+			::D "file $jid, $name, $group";
+			$remote{$jid}{name}  = $name;
+			$remote{$jid}{group} = $group;
+		}
+		close $f;
+	} else {
+		::I "no roster file $file";
+	}
+}
+
+sub roster_write {
+	my $file = $C{XMPP_ROSTER_FILE};
+
+	open my $f, '>', "$file.tmp" or die "open $file: $!";
+	print $f "$_,$remote{$_}{name},$remote{$_}{group}\n"
+		for sort keys %remote;
+	close $f or die "close: $!";
+	rename "$file.tmp", $file or die "rename $file.tmp to $file: $!";
+}
+
 sub do_presence { '<presence />' }
 
 sub do_message {
@@ -634,6 +663,10 @@ sub do_message {
 
 	# XXX
 	return '';
+}
+
+sub bcast_local {
+	my ($msg) = @_;
 }
 
 package main;
@@ -675,10 +708,10 @@ tor_connect::callme ($C{TOR_SERVICE_NAME});
 $INIT->recv;
 ::I "tor check successful";
 
-tor_connect::callme ('eqfuo6kefcnktd5j.onion')
-	if $C{TOR_SERVICE_NAME} eq '6f2nx7d3zemf4hhf.onion';
+xmpp::roster_read ();
+tor_connect::callme ($_) for sort keys %remote;
 
-#xmpp::init ();
+xmpp::init ();
 ::I "started";
 
 AnyEvent->condvar->recv; # forever
