@@ -97,7 +97,7 @@ tie %::hex, 'hex';
 package on_destroy;
 
 sub call(&) { bless \$_[0] }
-sub DESTROY { ${$_[0]} && ${$_[0]}->() }
+sub DESTROY { ${$_[0]} && ${$_[0]}->(); undef ${$_[0]}; }
 sub cancel { undef ${$_[0]} }
 
 package handle;
@@ -169,7 +169,7 @@ sub first_line {
 			if ($remote{$addr}{key1} eq $key1 &&
 			    $remote{$addr}{key2} eq $key2) {
 				delete $remote{$addr};
-				$INIT->send;
+				$INIT->send (1);
 			} else {
 				::E "somebody pretending myself";
 			}
@@ -341,9 +341,7 @@ sub callme {
 	}, sub {
 		local *__ANON__ = 'callme.not_connected';
 		::D "$addr";
-		return if $INIT->ready;
-		::E "could not call myself, problems with tor";
-		exit;
+		$INIT->send (0) if !$INIT->ready;
 	});
 }
 
@@ -948,7 +946,10 @@ $INIT = AE::cv;
 tor_service::init ();
 ::D "calling myself";
 tor_service::callme ($C{TOR_SERVICE_NAME});
-$INIT->recv;
+if (!$INIT->recv) {
+	::E "could not check myself, problems with tor";
+	exit;
+}
 ::I "tor check successful";
 
 xmpp::roster_read ();
