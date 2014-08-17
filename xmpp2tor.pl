@@ -267,9 +267,8 @@ sub callback_out {
 
 			::D "$h->{x2t_id} got $::esc{$line}";
 			if ($line =~ /^OK \Q$key2\E$/) {
-				my $req = "OK$CRLF";
-				::D "$h->{x2t_id} send $req";
-				$h->push_write ($req);
+				::D "$h->{x2t_id} send OK";
+				$h->push_write ("OK$CRLF");
 				peer_connected ($h, $addr);
 			} else {
 				::E "$h->{x2t_id} got $::esc{$line} " .
