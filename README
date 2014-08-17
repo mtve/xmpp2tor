@@ -11,7 +11,7 @@ how-to use:
 - plan your tcp ports, or use default 5222 for xmpp and 5221 for tor service
 - create tor hidden service with torrc additional configuration like this:
      HiddenServiceDir </path/>
-     HiddenServicePort 8221 <tor_service_addr>:<tor_service_port>
+     HiddenServicePort 5221 <tor_service_addr>:<tor_service_port>
 - edit xmpp2tor.conf parameters tor_socks_port, tor_service_name
 - run this program like this:
      ./xmpp2tor.pl xmpp2tor.conf &
