@@ -955,11 +955,8 @@ $INIT->recv;
 xmpp::roster_read ();
 my $periodic = AE::timer 0, $C{CALLME_PERIOD}, sub {
 	local *__ANON__ = 'periodic';
-	my $stat = 0;
-	for (sort keys %remote) {
-		tor_service::callme ($_);
-		$stat++ if tor_service::peer_is_ok ($_);
-	}
+	tor_service::callme ($_) for sort keys %remote;
+	my $stat = grep tor_service::peer_is_ok ($_), keys %remote;
 	::I "connected peers: $stat";
 };
 xmpp::init ();
