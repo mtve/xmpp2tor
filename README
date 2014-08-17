@@ -13,10 +13,10 @@ how-to use:
      HiddenServiceDir </path/>
      HiddenServicePort 8221 <tor_service_addr>:<tor_service_port>
 - edit xmpp2tor.conf parameters tor_socks_port, tor_service_name
-- run the program like this:
-     ./xmpp2tor.pl xmpp2tor.conf
+- run this program like this:
+     ./xmpp2tor.pl xmpp2tor.conf &
 - connect with your jabber client, usually to 127.0.0.1 with user/pass
-- add test contact xaeznmlsmpldjqrq.onion
+- add test contact xaeznmlsmpldjqrq.onion and drop a message
 - please report version of your jabber client and any issues
 
 TOR service sequence diagram for https://www.websequencediagrams.com/
