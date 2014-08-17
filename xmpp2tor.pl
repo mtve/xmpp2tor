@@ -4,7 +4,7 @@
 
 P2P instant messaging over TOR, available from any jabber client
 
-modules required:
+pure perl, modules required:
 - AnyEvent
 
 tested with Miranda-IM
@@ -21,7 +21,7 @@ how-to use:
 - connect with your jabber client, usually to 127.0.0.1 with user/pass
 - add test contact xxxx.onion and report version of your jabber client
 
-TOR service sequence diagram:
+TOR service sequence diagram (https://www.websequencediagrams.com/):
  A->B: connect to b_addr.onion:5221
  A->B: "XMPP2TOR CALLME a_addr.onion key1 key2" CR LF
  B->A: disconnect
@@ -78,7 +78,8 @@ my $ONION_RE = qr/[a-z0-9]{1,40}\.onion/;
 my $INIT;
 my %local;
 my %remote;
-my $local_presence;
+my $presence_unavailable = "<presence type='unavailable'/>";
+my $local_presence = $presence_unavailable;
 
 package esc;
 
@@ -226,9 +227,14 @@ sub peer_connected {
 	my ($h, $addr) = @_;
 
 	if (peer_is_ok ($addr)) {
-		::D "$h->{x2t_id} $addr is already connected, close";
-		handle::destroy ($h);
-		return;
+		if (rand () < .5) {
+			::D "$h->{x2t_id} $addr call collision, dropping new";
+			handle::destroy ($h);
+			return;
+		} else {
+			::D "$h->{x2t_id} $addr call collision, dropping old";
+			handle::destroy ($remote{$addr}{h});
+		}
 	}
 
 	::I "$addr confirmed";
@@ -243,11 +249,11 @@ sub peer_connected {
 	send_message ($h, $local_presence);
 	my $id = $h->{x2t_id};
 	$h->{x2t_disconnect} = on_destroy::call {
-		local *__ANON__ = 'peer.destroyed';
-		::D "$id $addr ok";
-		if (peer_is_ok ($addr)) {
+		local *__ANON__ = 'peer.disconnected';
+		::I "$addr, $id closed";
+		if (exists $remote{$addr}) {
 			delete $remote{$addr}{h};
-			xmpp::unavail ($addr);
+			xmpp::from_tor ($addr, $presence_unavailable);
 		}
 	};
 	read_message ($h);
@@ -280,21 +286,21 @@ sub callback_out {
 
 	return if xmpp::is_blacklisted ($addr);
 
-	tor_connect::socks ($addr, sub {
+	socks ($addr, sub {
 		my ($h) = @_;
 		local *__ANON__ = 'callback_out.connected';
 
 		my $req = "XMPP2TOR CALLBACK $C{TOR_SERVICE_NAME} $key1$CRLF";
-		::D "$addr send $req";
+		::D "$h->{x2t_id} send $req";
 		$h->push_write ($req);
 		$h->push_read (line => sub {
 			my ($h, $line) = @_;
 			local *__ANON__ = 'callback.reply';
 
-			::D "$addr got $::esc{$line}";
+			::D "$h->{x2t_id} got $::esc{$line}";
 			if ($line =~ /^OK \Q$key2\E$/) {
 				my $req = "OK$CRLF";
-				::D "$h->{x2t_id} $addr send $req";
+				::D "$h->{x2t_id} send $req";
 				$h->push_write ($req);
 				peer_connected ($h, $addr);
 			} else {
@@ -321,13 +327,13 @@ sub callme {
 	$remote{$addr}{key2} = rand_hex ();
 
 	::D "$addr";
-	tor_connect::socks ($addr, sub {
+	socks ($addr, sub {
 		my ($h) = @_;
 		local *__ANON__ = 'callme.connected';
 
 		my $req = "XMPP2TOR CALLME $C{TOR_SERVICE_NAME} " .
 			"$remote{$addr}{key1} $remote{$addr}{key2}$CRLF";
-		::D "$addr send $req";
+		::D "$h->{x2t_id} send $req";
 		$h->push_write ($req);
 		::I "$addr requested callme";
 		handle::gc ($h)->push_shutdown;
@@ -343,24 +349,22 @@ sub callme {
 sub send_message {
 	my ($h, $msg) = @_;
 
-	::D "$h->{x2t_id} send $::esc{$msg}";
+	::D "$h->{x2t_id} $h->{x2t_addr} send $::esc{$msg}";
 	$h->push_write (netstring => $msg);
 }
 
-sub send_one {
+sub send_remote {
 	my ($addr, $msg) = @_;
 
-	peer_is_ok ($addr) or die;
+	peer_is_ok ($addr) or die "peer $addr is not ok";
 	send_message ($remote{$addr}{h}, $msg);
 }
 
-sub send_all {
+sub send_remotes {
 	my ($msg) = @_;
 
-	peer_is_ok ($_) && send_one ($_, $msg) for keys %remote;
+	peer_is_ok ($_) && send_remote ($_, $msg) for sort keys %remote;
 }
-
-package tor_connect;
 
 sub socks {
 	my ($addr, $cb, $cb_err) = @_;
@@ -375,7 +379,6 @@ sub socks {
 
 			$fatal ||= 0;
 			::D "$h->{x2t_id} fatal=$fatal $message";
-			::I "$addr failed";
 			handle::destroy ($h);
 		},
 		on_connect	=> sub {
@@ -429,6 +432,66 @@ sub socks_reply2 {
 	}
 }
 
+package xml;
+
+# sham of http://www.w3.org/TR/2008/REC-xml-20081126/
+
+our $Char		= qr% [\015\012 -~] %x;
+our $CharData		= qr% [^<&]* %x;
+our $NameStartChar	= qr% [:A-Z_a-z] %x;
+our $NameChar		= qr% $NameStartChar | [-.0-9] %x;
+our $Name		= qr% $NameStartChar ($NameChar)* %x;
+our $CharRef		= qr% &# [0-9]+ ; | &#x [0-9a-fA-F]+ ; %x;
+our $EntityRef		= qr% & $Name ; %x;
+our $Reference		= qr% $EntityRef | $CharRef %x;
+our $AttValue		= qr% " ([^<&"] | $Reference)* " |
+			      ' ([^<&'] | $Reference)* ' %x;
+our $Eq			= qr% \s* = \s* %x;
+our $Attribute		= qr% $Name $Eq $AttValue %x;
+our $STag		= qr% < $Name (\s+ $Attribute)* \s* > %x;
+our $ETag		= qr% </ $Name \s* > %x;
+our $EmptyElemTag	= qr% < $Name (\s+ $Attribute)* \s* /> %x;
+our $CDStart		= qr% <!\[CDATA\[ %x;
+our $CData		= qr% ( (?! ]]> ) $Char )* %x;
+our $CDEnd		= qr% ]]> %x;
+our $CDSect		= qr% $CDStart $CData $CDEnd %x;
+our $Comment		= qr% <!-- ( (?! --> ) $Char )* --> %x;
+our $PI			= qr% .^ %x;
+
+our $content;
+our $element		= qr% $EmptyElemTag | $STag (??{ $content }) $ETag %x;
+$content		= qr% $CharData?
+	(($element | $Reference | $CDSect | $PI | $Comment) $CharData?)* %x;
+
+sub element { $_[0] =~ /^$element$/o }
+
+sub attr {
+	my ($xml, $attr) = @_;
+
+	return $xml =~ /^[^>]*\s\Q$attr\E\s*=\s*('([^'<]*)'|"([^"<]*)")/ ?
+		$2 || $3 || '' : '';
+}
+
+sub attr_del {
+	my ($xml, $attr) = @_;
+
+	$xml =~ s/^([^>]*)\s\Q$attr\E\s*=\s*('([^'<]*)'|"([^"<]*)")/$1/;
+	return $xml;
+}
+
+sub attr_ins {
+	my ($xml, $attr, $val) = @_;
+
+	$xml =~ s/^(<$Name)/$1 $attr='$val'/ or die "not xml";
+	return $xml;
+}
+
+sub child {
+	my ($xml) = @_;
+
+	return $xml =~ s/^$STag// && $xml =~ s/$ETag$// ? $xml : '';
+}
+
 package xmpp;
 
 sub is_blacklisted {
@@ -457,7 +520,7 @@ sub handle {
 
 			$fatal ||= 0;
 			::D "$h->{x2t_id} fatal=$fatal $message " .
-				"buf=$esc::{${\$h->rbuf }}";
+				"buf=$esc::{${\($h->rbuf || '')}}";
 			handle::destroy ($h);
 		},
 		timeout		=> 20,
@@ -473,11 +536,8 @@ sub start_stream {
 
 	::D "$h->{x2t_id} got $::esc{$data}";
 
-	$h->{xmpp_servername} =
-	 	$data =~ /<stream:stream[^>]*\bto=["'](.*?)["']/ ?
-			$1 : $C{XMPP_ADDR};
+	$h->{xmpp_servername} = xml::attr ($data, 'to') || $C{XMPP_ADDR};
 	$h->{xmpp_streamid} = int rand 1e9;
-
 	$h->push_write (<<XML);
 <?xml version='1.0'?>
 <stream:stream xmlns:stream='http://etherx.jabber.org/streams'
@@ -491,10 +551,9 @@ sub nextread {
 	my ($h) = @_;
 
 	# read eos or complete tag
-	$h->push_read (regex => qr!^ \s* (
-		</ stream:stream [^>]* > |
-		< (\w+) \b [^>]* /> |
-		< (\w+) \b [^>]* > \C*? </ \3 > )
+	$h->push_read (regex => qr!^
+		\s* </ stream:stream (\s $xml::Attribute)* \s? > |
+		\s* $xml::element
 	!x, qr!.!, \&read_cb);
 }
 
@@ -526,21 +585,27 @@ sub process {
 		return;
 	}
 
+	xml::element ($_) or die "not an xml element";
+
 	/^<(\w+)/ or die "no tag";
 	no strict 'refs';
-	exists &{"do_$1"} or die "unknown tag $1\n";
-	my $resp = &{"do_$1"} ();
+	exists &{"got_$1"} or die "unknown tag $1\n";
+	my $resp = &{"got_$1"} ();
 
 	::D "$cur_h->{x2t_id} send $::esc{$resp}";
 	$cur_h->push_write ($resp);
 }
 
-sub do_iq {
-	/^<iq[^>]*\bid=["'](.*?)["']/ or die "no id";
-	my $result = "type='result' id='$1'";
+sub got_iq {
+	my $id = xml::attr ($_, 'id') or die "no id";
+	my $result = "type='result' id='$id'";
+
+	my $child = xml::child ($_);
+
+	my $query = $child =~ /^<query/ ? xml::attr ($child, 'xmlns') : '';
 
 	# auth
-	/<query xmlns=['"]jabber:iq:auth\b/ && return <<XML;
+	$query eq 'jabber:iq:auth' && return <<XML;
 <iq $result>
  ${\iq_auth () }
 </iq>
@@ -552,19 +617,19 @@ XML
 		"to='$cur_h->{xmpp_userandresource}'";
 
 	# ping
-	/<ping/ && return <<XML;
+	$child =~ /^<ping/ && return <<XML;
 <$iq />
 XML
 
 	# disco items
-	m!<query xmlns=['"]http://jabber.org/protocol/disco#items! && return <<XML;
+	$query eq 'http://jabber.org/protocol/disco#items' && return <<XML;
 <$iq>
  <query xmlns='http://jabber.org/protocol/disco#items#' />
 </iq>
 XML
 
 	# disco info
-	m!<query xmlns=['"]http://jabber.org/protocol/disco#info! && return <<XML;
+	$query eq 'http://jabber.org/protocol/disco#info' && return <<XML;
 <$iq>
  <query xmlns='http://jabber.org/protocol/disco#info'>
   <identity category='services' type='jabber' name='xmpp2tor' />
@@ -577,10 +642,10 @@ XML
 XML
 
 	# roster
-	m!<query xmlns=["']jabber:iq:roster! && return roster ($result);
+	$query eq 'jabber:iq:roster' && return roster ($result);
 
 	# vcard
-	/<vcard/i && return <<XML;
+	$child =~ /<vcard/i && return <<XML;
 <iq $result from='$cur_h->{xmpp_userandresource}'>
  <vCard xmlns='vcard-temp'/>
 </iq>
@@ -588,7 +653,7 @@ XML
 
 	::E "$cur_h->{x2t_id} unknown iq $_";
 	return <<XML;
-<iq type='error' id='$1'>
+<iq type='error' id='$id'>
  <error type='cancel'>
   <feature-not-implemented xmlns='urn:ietf:params:xml:ns:xmpp-stanzas'/>
  </error>
@@ -626,20 +691,36 @@ XML
 	$cur_h->{x2t_close} = on_destroy::call {
 		delete $local{$id};
 		if (!keys %local) {
-			$local_presence =
-				presence_unavailable ($C{TOR_SERVICE_NAME});
-			tor_service::send_all ($local_presence);
+			$local_presence = $presence_unavailable;
+			tor_service::send_remotes ($local_presence);
 		}
 	};
 	return '';
 }
 
-sub jid { my ($xmpp, $addr) = @_; "$addr\@$xmpp->{xmpp_servername}" }
+sub jid {
+	my ($xmpp, $addr) = @_;
+
+	$addr =~ s/\@.*//;
+	return "$addr\@$xmpp->{xmpp_servername}";
+}
 
 sub fix_from {
+	my ($xmpp, $msg, $from) = @_;
+
+	$from = jid ($xmpp, $from);
+	$msg = xml::attr_del ($msg, 'from');
+	$msg = xml::attr_ins ($msg, 'from', $from);
+	::D "$xmpp->{x2t_id} fixed $::esc{$msg}";
+	return $msg;
+}
+
+sub fix_to {
 	my ($xmpp, $msg) = @_;
 
-	$msg =~ s/^([^>]*\sfrom=)('|")([^"]*)\2/$1'${\jid ($xmpp, $3) }'/x;
+	my $to = $cur_h->{xmpp_userandresource};
+	$msg = xml::attr_del ($msg, 'to');
+	$msg = xml::attr_ins ($msg, 'to', $to);
 	::D "$xmpp->{x2t_id} fixed $::esc{$msg}";
 	return $msg;
 }
@@ -649,14 +730,18 @@ sub roster {
 
 	# update from request
 	while (m!
-<item \b .*? \b jid=["'](.*?)[@"'] .*? \b subscription=["']remove["']
+<item \b .*?
+ \b jid\s*=\s*['"](.*?)[\@'"] .*?
+ \b subscription\s*=\s*['"]remove['"]
 	!gx) {
 		::D "remove $1";
 		delete $remote{$1};
 	}
 
 	while (m!
-<item \b .*? \b jid=["'](.*?)[@"'] .*? \b name=["'](.*?)["'] .*? (?: /> | >
+<item \b .*?
+ \b jid\s*=\s*['"](.*?)[\@'"] .*?
+ \b name\s*=\s*['"](.*?)['"] .*? (?: /> | >
  \C*?
   <group>(.*?)</group>
  \C*?
@@ -664,12 +749,17 @@ sub roster {
 	!gx) {
 		my ($addr, $name, $group) = ($1, $2, $3 || '');
 
-		$addr =~ s/\@.*//;
 		$addr .= ".onion" if $addr !~/\./;
 		if ($addr =~ $ONION_RE) {
 			::D "add $addr, $name, $group";
 			$remote{$addr}{name} = $name;
 			$remote{$addr}{group} = $group;
+
+			if (is_blacklisted ($addr) &&
+			    tor_service::peer_is_ok ($addr)) {
+				::D "blacklisted $addr";
+				handle::destroy ($remote{$addr}{h});
+			}
 
 			tor_service::callme ($addr);
 		} else {
@@ -690,7 +780,7 @@ sub roster {
    <group>$remote{$_}{group}</group>
   </item>
 XML
-		$presence .= fix_from ($cur_h, $remote{$_}{presence})
+		$presence .= fix_from ($cur_h, $remote{$_}{presence}, $_)
 			if $remote{$_}{presence};
 	}
 
@@ -737,82 +827,88 @@ sub send_roster_subscribe {
 	my ($addr) = @_;
 
 	::D "$addr";
-	send_all (<<XML);
-<iq from='$addr' id='xmpp_tor_roster_${\int rand 1e9 }' type='set'>
+
+	for my $xmpp (values %local) {
+		my $jid = jid ($xmpp, $addr);
+
+		send_local ($xmpp, <<XML);
+<iq from='$jid' id='xmpp_tor_roster_${\int rand 1e9 }' type='set'>
   <query xmlns='jabber:iq:roster'>
-    <item jid='$addr' name='$remote{$addr}{name}'>
+    <item jid='$jid' name='$remote{$addr}{name}'>
       <group>$remote{$addr}{group}</group>
     </item>
   </query>
 </iq>
 XML
+	}
 }
 
-sub do_presence {
+sub got_presence {
 	::D "presence $::esc{$_}";
-	s/^<presence/<presence from='$C{TOR_SERVICE_NAME}'/;
 	$local_presence = $_;
-	tor_service::send_all ($local_presence);
+	tor_service::send_remotes ($local_presence);
 	return '<presence />';
 }
 
-sub presence_unavailable {
-	my ($jid) = @_;
-
-	return <<XML;
-<presence type='unavailable' from='$jid' />
-XML
-}
-
-sub do_message {
+sub got_message {
 	::D "message $::esc{$_}";
 
-	my %a;
-	for my $tag (qw( from to id )) {
-		($a{$tag}) = /^[^>]*\b$tag=["'](.*?)['"]/ or die "no $tag";
-	}
+	my $to = xml::attr ($_, 'to') or die "no to";
+	$to =~ s/\@.+//;
 
-	tor_service::peer_is_ok ($a{to}) or return <<XML;
-<message from='$a{to}' id='$a{id}' to='$a{from}' type='error'>
-  <error by='$cur_h->{xmpp_servername}' type='cancel'>
+	if (tor_service::peer_is_ok ($to)) {
+		my $msg = xml::attr_del ($_, 'to');
+		tor_service::send_remote ($to, $msg);
+		return '';
+	} else {
+		return message_offline (jid ($cur_h, $to));
+	}
+}
+
+sub message_offline {
+	my ($from) = @_;
+
+	return <<XML;
+<message from='$from' type='error'>
+  <error type='cancel' code='502'>
     <gone xmlns='urn:ietf:params:xml:ns:xmpp-stanzas' />
   </error>
+  <body>Contact is offline, message was not sent!</body>
 </message>
 XML
-	tor_service::send_one ($a{to}, $_);
-	return '';
 }
 
 sub from_tor {
 	my ($from, $msg) = @_;
 
-	# some protection
-	$msg =~ m!^< (message|presence) \b [^<>]* ( / | >\C*</\1 ) > \s* \z!x
-		or die "bad tag";
-	$msg =~ /^ [^>]* \s from=('|")\Q$from\E\1 /x
-		or die "bad from $from";
+	xml::element ($msg) or die "not an xml element";
 
-	$remote{$from}{presence} = $msg if $msg =~ /^<presence\b/;
+	$msg =~ /^<(message|presence)\b/ or die "bad tag";
 
-	send_all ($msg);
-}
+	$remote{$from}{presence} = $msg if $msg =~ /presence/;
 
-sub send_all {
-	my ($msg) = @_;
+	if (keys %local) {
+		send_local ($_, fix_from ($_, $msg, $from))
+			for values %local;
+	} elsif ($msg =~ /message/ && xml::attr ($msg, 'type') ne 'error') {
+		tor_service::send_remote ($from, message_offline ('peer'));
 
-	for (values %local) {
-		my $msg2 = fix_from ($_, $msg);
-		::D "$_->{x2t_id} send $::esc{$msg2}";
-		$_->push_write ($msg2);
+		if ($C{OFFLINE_MESSAGE} && !$remote{$from}{off}++) {
+			tor_service::send_remote ($from, <<XML);
+<message>
+  <body>$C{OFFLINE_MESSAGE}</body>
+</message>
+XML
+		}
 	}
 }
 
-sub unavail {
-	my ($addr) = @_;
+sub send_local {
+	my ($xmpp, $msg) = @_;
 
-	my $un = presence_unavailable ($addr);
-	$remote{$addr}{presence} = $un;
-	send_all ($un);
+	$msg = fix_to ($xmpp, $msg);
+	::D "$xmpp->{x2t_id} send $::esc{$msg}";
+	$xmpp->push_write ($msg);
 }
 
 package main;
@@ -857,13 +953,14 @@ $INIT->recv;
 ::I "tor check successful";
 
 xmpp::roster_read ();
-$local_presence = xmpp::presence_unavailable ($C{TOR_SERVICE_NAME});
 my $periodic = AE::timer 0, $C{CALLME_PERIOD}, sub {
+	local *__ANON__ = 'periodic';
+	my $stat = 0;
 	for (sort keys %remote) {
 		tor_service::callme ($_);
-		# XXX send ping
-		# XXX close if no traffic
+		$stat++ if tor_service::peer_is_ok ($_);
 	}
+	::I "connected peers: $stat";
 };
 xmpp::init ();
 ::I "started";
