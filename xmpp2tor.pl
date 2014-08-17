@@ -19,7 +19,8 @@ how-to use:
 - edit xmpp2tor.conf parameters tor_socks_port, tor_service_name
 - run the program
 - connect with your jabber client, usually to 127.0.0.1 with user/pass
-- add test contact xxxx.onion and report version of your jabber client
+- add test contact xaeznmlsmpldjqrq.onion
+- report version of your jabber client
 
 TOR service sequence diagram (https://www.websequencediagrams.com/):
  A->B: connect to b_addr.onion:5221
@@ -895,9 +896,7 @@ sub from_tor {
 
 		if ($C{OFFLINE_MESSAGE} && !$remote{$from}{off}++) {
 			tor_service::send_remote ($from, <<XML);
-<message>
-  <body>$C{OFFLINE_MESSAGE}</body>
-</message>
+<message><body>$C{OFFLINE_MESSAGE}</body></message>
 XML
 		}
 	}
