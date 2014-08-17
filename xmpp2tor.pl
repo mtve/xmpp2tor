@@ -79,8 +79,9 @@ my $ONION_RE = qr/[a-z0-9]{1,40}\.onion/;
 my $INIT;
 my %local;
 my %remote;
-my $presence_offline = '<presence><show>xa</show></presence>';
-my $local_presence = $presence_offline;
+my $presence_noremote = "<presence type='unavailable'>";
+my $presence_nolocal = "<presence><show>xa</show></presence>";
+my $local_presence = $presence_nolocal;
 
 package esc;
 
@@ -254,7 +255,7 @@ sub peer_connected {
 		::I "$addr, $id closed";
 		if (exists $remote{$addr}) {
 			delete $remote{$addr}{h};
-			xmpp::from_tor ($addr, $presence_offline);
+			xmpp::from_tor ($addr, $presence_noremote);
 		}
 	};
 	read_message ($h);
@@ -690,7 +691,7 @@ XML
 	$cur_h->{x2t_close} = on_destroy::call {
 		delete $local{$id};
 		if (!keys %local) {
-			$local_presence = $presence_offline;
+			$local_presence = $presence_nolocal;
 			tor_service::send_remotes ($local_presence);
 		}
 	};
