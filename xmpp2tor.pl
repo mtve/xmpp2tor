@@ -64,7 +64,7 @@ tie %::hex, 'hex';
 package on_destroy;
 
 sub call(&) { bless \$_[0] }
-sub DESTROY { ${$_[0]} && ${$_[0]}->(); undef ${$_[0]}; }
+sub DESTROY { ${$_[0]} && ${$_[0]}->() }
 sub cancel { undef ${$_[0]} }
 
 package handle;
@@ -487,7 +487,7 @@ sub handle {
 
 			$fatal ||= 0;
 			::D "$h->{x2t_id} fatal=$fatal $message " .
-				"buf=$esc::{${\($h->rbuf || '')}}";
+				"buf=$::esc{$h->rbuf}";
 			handle::destroy ($h);
 		},
 		timeout		=> 20,
@@ -521,7 +521,7 @@ sub nextread {
 	$h->push_read (regex => qr!^ \s* (
 		</ stream:stream (\s $xml::Attribute)* \s? > |
 		$xml::element
-	) !x, qr!.!, \&read_cb);
+	) !x, \&read_cb);
 }
 
 my $cur_h;
