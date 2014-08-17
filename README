@@ -3,7 +3,7 @@ P2P instant messaging over TOR, available from any jabber client
 it's a single user (but multiple clients are ok) jabber server, that
 transparently communicates with other such servers.
 
-it's written in perl and requires AnyEvent
+it's written in perl and requires AnyEvent.
 
 xmpp server is based on in.jabberd from inetdxtra by R. Rawson-Tetley
 
@@ -13,12 +13,14 @@ how-to use:
      HiddenServiceDir </path/>
      HiddenServicePort 8221 <tor_service_addr>:<tor_service_port>
 - edit xmpp2tor.conf parameters tor_socks_port, tor_service_name
-- run the program
+- run the program like this:
+     ./xmpp2tor.pl xmpp2tor.conf
 - connect with your jabber client, usually to 127.0.0.1 with user/pass
 - add test contact xaeznmlsmpldjqrq.onion
-- report version of your jabber client
+- please report version of your jabber client and any issues
 
-TOR service sequence diagram (https://www.websequencediagrams.com/):
+TOR service sequence diagram for https://www.websequencediagrams.com/
+
  A->B: connect to b_addr.onion:5221
  A->B: "XMPP2TOR CALLME a_addr.onion key1 key2" CR LF
  B->A: disconnect
