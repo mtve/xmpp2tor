@@ -403,7 +403,7 @@ package xml;
 # sham of http://www.w3.org/TR/2008/REC-xml-20081126/
 
 our $Char		= qr% [\015\012 -~] %x;
-our $CharData		= qr% [^<&]* %x;
+our $CharData		= qr% [^<&] %x;
 our $NameStartChar	= qr% [:A-Z_a-z] %x;
 our $NameChar		= qr% $NameStartChar | [-.0-9] %x;
 our $Name		= qr% $NameStartChar ($NameChar)* %x;
@@ -424,10 +424,12 @@ our $CDSect		= qr% $CDStart $CData $CDEnd %x;
 our $Comment		= qr% <!-- ( (?! --> ) $Char )* --> %x;
 our $PI			= qr% .^ %x;
 
-our $content;
-our $element		= qr% $EmptyElemTag | $STag (??{ $content }) $ETag %x;
-$content		= qr% $CharData?
-	(($element | $Reference | $CDSect | $PI | $Comment) $CharData?)* %x;
+our $element;
+our $content		= qr% $CharData* (
+	((?=<)(??{ $element }) | $Reference | $CDSect | $PI | $Comment)
+	$CharData*
+)* %x;
+$element		= qr% $EmptyElemTag | $STag $content $ETag %x;
 
 sub element { $_[0] =~ /^$element$/o }
 
