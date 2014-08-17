@@ -425,7 +425,7 @@ our $PI			= qr% .^ %x;
 
 our $element;
 our $content		= qr% $CharData* (
-	((?=<)(??{ $element }) | $Reference | $CDSect | $PI | $Comment)
+	( (?= < ) (??{ $element }) | $Reference | $CDSect | $PI | $Comment)
 	$CharData*
 )* %x;
 $element		= qr% $EmptyElemTag | $STag $content $ETag %x;
@@ -584,9 +584,7 @@ XML
 		"to='$cur_h->{xmpp_userandresource}'";
 
 	# ping
-	$child =~ /^<ping/ && return <<XML;
-<$iq />
-XML
+	$child =~ /^<ping/ && return "<$iq />";
 
 	# disco items
 	$query eq 'http://jabber.org/protocol/disco#items' && return <<XML;
@@ -649,7 +647,6 @@ XML
 		Digest::SHA::sha1_hex ($cur_h->{xmpp_streamid} . $C{XMPP_PASS});
 
 	my $id = $cur_h->{x2t_id};
-
 	::I "$id logged in $a{username}";
 	$cur_h->{xmpp_userandresource} =
 		"$a{username}\@$cur_h->{xmpp_servername}/$a{resource}";
@@ -764,7 +761,6 @@ XML
 sub roster_read {
 	my $file = $C{XMPP_ROSTER_FILE};
 
-	# read file
 	if (open my $f, $file) {
 		local $_;
 		while (<$f>) {
