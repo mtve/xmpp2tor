@@ -844,6 +844,7 @@ XML
 
 sub got_presence {
 	::D "presence $::esc{$_}";
+	return if xml::attr ($_, 'type');
 	$local_presence = $_;
 	tor_service::send_remotes ($local_presence);
 	return '<presence />';
@@ -956,8 +957,9 @@ xmpp::roster_read ();
 my $periodic = AE::timer 0, $C{CALLME_PERIOD}, sub {
 	local *__ANON__ = 'periodic';
 	tor_service::callme ($_) for sort keys %remote;
-	my $stat = grep tor_service::peer_is_ok ($_), keys %remote;
-	::I "connected peers: $stat";
+	my $rem = grep tor_service::peer_is_ok ($_), keys %remote;
+	my $loc = keys %local;
+	::I "connected remotes $rem locals $loc";
 };
 xmpp::init ();
 ::I "started";
