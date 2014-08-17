@@ -933,8 +933,8 @@ sub format_time($) {
 
 load_config ();
 
-$AnyEvent::Log::FILTER->level ($C{LOG_LEVEL});
 $AnyEvent::Log::LOG->log_to_file ($C{LOG_FILE}) if $C{LOG_FILE};
+$AnyEvent::Log::FILTER->level ($C{LOG_LEVEL});
 
 ::I "starting pid=$$ on perl $^V system $^O";
 if ($C{PID_FILE}) {
