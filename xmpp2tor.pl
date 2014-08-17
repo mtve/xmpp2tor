@@ -964,4 +964,8 @@ my $periodic = AE::timer 0, $C{CALLME_PERIOD}, sub {
 xmpp::init ();
 ::I "started";
 
-AE::cv->recv; # forever
+my $EXIT = AE::cv;
+my $sigterm = AE::signal TERM => sub { $EXIT->send };
+my $sigint  = AE::signal INT  => sub { $EXIT->send };
+$EXIT->recv;
+::I "stopped";
