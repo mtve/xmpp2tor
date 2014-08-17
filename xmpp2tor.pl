@@ -517,10 +517,10 @@ sub nextread {
 	my ($h) = @_;
 
 	# read eos or complete tag
-	$h->push_read (regex => qr!^
-		\s* </ stream:stream (\s $xml::Attribute)* \s? > |
-		\s* $xml::element
-	!x, qr!.!, \&read_cb);
+	$h->push_read (regex => qr!^ \s* (
+		</ stream:stream (\s $xml::Attribute)* \s? > |
+		$xml::element
+	) !x, qr!.!, \&read_cb);
 }
 
 my $cur_h;
