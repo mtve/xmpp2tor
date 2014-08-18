@@ -413,9 +413,10 @@ our $AttValue		= qr% " ([^<&"] | $Reference)* " |
 			      ' ([^<&'] | $Reference)* ' %x;
 our $Eq			= qr% \s* = \s* %x;
 our $Attribute		= qr% $Name $Eq $AttValue %x;
-our $STag		= qr% < $Name (\s+ $Attribute)* \s* > %x;
+our $Attributes		= qr% (\s+ $Attribute)* \s* %x;
+our $STag		= qr% < $Name $Attributes > %x;
 our $ETag		= qr% </ $Name \s* > %x;
-our $EmptyElemTag	= qr% < $Name (\s+ $Attribute)* \s* /> %x;
+our $EmptyElemTag	= qr% < $Name $Attributes /> %x;
 our $CDStart		= qr% <!\[CDATA\[ %x;
 our $CData		= qr% ( (?! ]]> ) $Char )* %x;
 our $CDEnd		= qr% ]]> %x;
@@ -493,8 +494,8 @@ sub handle {
 		timeout		=> 20,
 		x2t_id		=> "xmpp-from-$host:$port",
 	)->push_read (regex => qr!^ \s*
-		<\? xml [^>]* > \s*
-		< stream:stream [^>]* >
+		<\? xml $xml::Attributes \?> \s*
+		< stream:stream $xml::Attributes >
 	!x, qr!.!, \&start_stream);
 }
 
@@ -519,7 +520,7 @@ sub nextread {
 
 	# read eos or complete tag
 	$h->push_read (regex => qr!^ \s* (
-		</ stream:stream (\s $xml::Attribute)* \s? > |
+		</ stream:stream $xml::Attributes > |
 		$xml::element
 	) !x, \&read_cb);
 }
